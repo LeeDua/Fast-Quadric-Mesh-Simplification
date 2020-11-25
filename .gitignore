@@ -1,0 +1,12 @@
+.vs/
+data/
+bin.linux/
+bin.OSX/
+bin.Windows/
+bin32/
+bin64/
+*.obj
+*.png
+*.exe
+*.log
+Release/
