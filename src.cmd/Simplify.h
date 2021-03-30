@@ -11,7 +11,9 @@
 //
 // 5/2016: Chris Rorden created minimal version for OSX/Linux/Windows compile
 
-//#include <iostream>
+#include <iostream>
+#include <algorithm>
+#include<functional>
 //#include <stddef.h>
 //#include <functional>
 //#include <sys/stat.h>
@@ -323,6 +325,9 @@ namespace Simplify
 	std::vector<Ref> refs;
     std::string mtllib;
     std::vector<std::string> materials;
+	std::vector<float> averagedFaceNorms;
+	float normThres = 0.0f;
+	float normThresholdRatio = 10.0f;
 
 	// Helper functions
 
@@ -342,9 +347,10 @@ namespace Simplify
 	//                 more iterations yield higher quality
 	//
 
-	void simplify_mesh(int target_count, double agressiveness=7, bool verbose=false)
+	void simplify_mesh(int target_count, double agressiveness=7, float normRatio=10.0f, bool verbose=false)
 	{
 		// init
+		normThresholdRatio = normRatio;
 		loopi(0,triangles.size())
         {
             triangles[i].deleted=0;
@@ -358,6 +364,7 @@ namespace Simplify
 		//loop(iteration,0,100)
 		for (int iteration = 0; iteration < 100; iteration ++)
 		{
+			int startDeleted = deleted_triangles;
 			if(triangle_count-deleted_triangles<=target_count)break;
 
 			// update mesh once in a while
@@ -390,55 +397,63 @@ namespace Simplify
 				if(t.deleted) continue;
 				if(t.dirty) continue;
 
-				loopj(0,3)if(t.err[j]<threshold)
-				{
-
-					int i0=t.v[ j     ]; Vertex &v0 = vertices[i0];
-					int i1=t.v[(j+1)%3]; Vertex &v1 = vertices[i1];
-					// Border check
-					if(v0.border != v1.border)  continue;
-
-					// Compute vertex to collapse to
-					vec3f p;
-					calculate_error(i0,i1,p);
-					deleted0.resize(v0.tcount); // normals temporarily
-					deleted1.resize(v1.tcount); // normals temporarily
-					// don't remove if flipped
-					if( flipped(p,i0,i1,v0,v1,deleted0) ) continue;
-
-					if( flipped(p,i1,i0,v1,v0,deleted1) ) continue;
-
-					if ( (t.attr & TEXCOORD) == TEXCOORD  )
+				for (int j = 0; j < 3; j++) {
+					if(t.err[j]<threshold && averagedFaceNorms[t.v[j]] > normThres)
 					{
-						update_uvs(i0,v0,p,deleted0);
-						update_uvs(i0,v1,p,deleted1);
+						int i0=t.v[ j     ]; Vertex &v0 = vertices[i0];
+						int i1=t.v[(j+1)%3]; Vertex &v1 = vertices[i1];
+						// Border check
+						if(v0.border != v1.border)  continue;
+
+						// Compute vertex to collapse to
+						vec3f p;
+						calculate_error(i0,i1,p);
+						deleted0.resize(v0.tcount); // normals temporarily
+						deleted1.resize(v1.tcount); // normals temporarily
+						// don't remove if flipped
+						if( flipped(p,i0,i1,v0,v1,deleted0) ) continue;
+
+						if( flipped(p,i1,i0,v1,v0,deleted1) ) continue;
+
+						if ( (t.attr & TEXCOORD) == TEXCOORD  )
+						{
+							update_uvs(i0,v0,p,deleted0);
+							update_uvs(i0,v1,p,deleted1);
+						}
+
+						// not flipped, so remove edge
+						v0.p=p;
+						v0.q=v1.q+v0.q;
+						int tstart=refs.size();
+
+						update_triangles(i0,v0,deleted0,deleted_triangles);
+						update_triangles(i0,v1,deleted1,deleted_triangles);
+
+						int tcount=refs.size()-tstart;
+
+						if(tcount<=v0.tcount)
+						{
+							// save ram
+							if(tcount)memcpy(&refs[v0.tstart],&refs[tstart],tcount*sizeof(Ref));
+						}
+						else
+							// append
+							v0.tstart=tstart;
+
+						v0.tcount=tcount;
+						break;
 					}
-
-					// not flipped, so remove edge
-					v0.p=p;
-					v0.q=v1.q+v0.q;
-					int tstart=refs.size();
-
-					update_triangles(i0,v0,deleted0,deleted_triangles);
-					update_triangles(i0,v1,deleted1,deleted_triangles);
-
-					int tcount=refs.size()-tstart;
-
-					if(tcount<=v0.tcount)
-					{
-						// save ram
-						if(tcount)memcpy(&refs[v0.tstart],&refs[tstart],tcount*sizeof(Ref));
-					}
-					else
-						// append
-						v0.tstart=tstart;
-
-					v0.tcount=tcount;
-					break;
 				}
+				//loopj(0,3)
 				// done?
 				if(triangle_count-deleted_triangles<=target_count)break;
 			}
+			std::cout << "Iteration " << iteration << " delete " << deleted_triangles - startDeleted << std::endl;
+			if (deleted_triangles - startDeleted == 0) {
+				//normThres = 0;
+				break;
+			}
+				
 		}
 		// clean up mesh
 		compact_mesh();
@@ -728,6 +743,51 @@ namespace Simplify
 				loopj(0,vcount.size()) if(vcount[j]==1)
 					vertices[vids[j]].border=1;
 			}
+			/*int borderCount = 0;
+			for (auto& v : vertices) {
+				if (v.border == 1) {
+					std::cout << "Border vertex markded" << std::endl;
+					borderCount++;
+				}
+			}
+			std::cout << "Total border vertex count " << borderCount<< std::endl;*/
+		}
+		
+		// initialize averaged face normal products for each vertex to identify whether a vertex is on a plane
+		if (iteration == 0) {
+			for (int i = 0; i < vertices.size(); i++) {
+				Vertex& v = vertices[i];
+				float product = 1.0;
+				vec3f norm(1.0,1.0,1.0);
+				norm.normalize();
+				for (int j = 0; j < v.tcount; j++) {
+					Triangle& t = triangles[refs[v.tstart + j].tid];
+					product *= abs(norm.dot(t.n));
+					norm = t.n;
+				}
+				product = pow(product, 1 / (1.0 * v.tcount));
+				averagedFaceNorms.push_back(product);
+			}
+			std::vector<float> cpy(averagedFaceNorms);
+			std::sort(cpy.begin(),cpy.end(), std::greater<float>());
+			normThres = cpy[cpy.size() / normThresholdRatio - 1];
+			
+			std::cout << "Averaged faced norms." << std::endl;
+			std::cout << "TOP K";
+			int K = 10;
+			for (int i = 0; i < K; i++) {
+				std::cout << cpy[i] << " ";
+			}
+			std::cout << std::endl;
+			int DIV = 10;
+			std::cout << "DIV FOLD PTS: ";
+			int len = cpy.size();
+			for (int i = 0; i < DIV; i++) {
+				std::cout << cpy[len / DIV * i];
+			}
+			std::cout << std::endl 
+				<< "NormThreshold :" << normThres << std::endl
+				<< "-----------------------------" << std::endl;
 		}
 	}
 

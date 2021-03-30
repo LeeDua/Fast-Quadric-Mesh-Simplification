@@ -18,6 +18,7 @@
 #include "Simplify.h"
 #include <stdio.h>
 #include <time.h>  // clock_t, clock, CLOCKS_PER_SEC
+#include <iostream>
 
 void showHelp(const char * argv[]) {
     const char *cstr = (argv[0]);
@@ -57,18 +58,43 @@ int main(int argc, const char * argv[]) {
 		printf("Object will not survive such extreme decimation\n");
     	return EXIT_FAILURE;
     }
+    /// <summary>
+    ///  aggressiveness is not important
+    /// </summary>
+    /// <param name="argc"></param>
+    /// <param name="argv"></param>
+    /// <returns></returns>
     double agressiveness = 7.0;
     if (argc > 4) {
     	agressiveness = atof(argv[4]);
     }
+
+    /// <summary>
+    /// normThreshold [0,100]
+    /// look at line 771 -> 773
+    ///  -> 1/normThreshold  is used as the point whose value is picked as the THRESHOLD of averaged_face_normal array(sorted)
+    /// faces with normal less than THREHOLD will be deleted / merged
+    /// so, the larger the normThreshold(close to 100), the smaller will the face norm THRESHOLD be
+    ///    more faces on the plane will be deleted
+    /// Generally, normThreshold = 10 will produce good results ?
+    ///    faces whose normal is greater (less flat) than the 10% point (flat enough) will be deleted
+    /// 
+    /// </summary>
+    /// <param name="argc"></param>
+    /// <param name="argv"></param>
+    /// <returns></returns>
+    float normThresholdRatio = 10.0;
+    if (argc > 5) {
+        normThresholdRatio = atof(argv[5]);
+    }
 	clock_t start = clock();
 	printf("Input: %zu vertices, %zu triangles (target %d)\n", Simplify::vertices.size(), Simplify::triangles.size(), target_count);
 	int startSize = Simplify::triangles.size();
-	Simplify::simplify_mesh(target_count, agressiveness, true);
+	Simplify::simplify_mesh(target_count, agressiveness, normThresholdRatio, true);
 	//Simplify::simplify_mesh_lossless( false);
 	if ( Simplify::triangles.size() >= startSize) {
 		printf("Unable to reduce mesh.\n");
-    	return EXIT_FAILURE;
+    	// return EXIT_FAILURE;
 	}
 	Simplify::write_obj(argv[2]);
 	printf("Output: %zu vertices, %zu triangles (%f reduction; %.4f sec)\n",Simplify::vertices.size(), Simplify::triangles.size()
